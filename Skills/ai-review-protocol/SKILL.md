@@ -123,3 +123,13 @@ sh <skill-root>/scripts/check-review.sh .
 ```
 
 The check reports missing or inconsistent files but does not block or clean up.
+
+## State Values
+
+Use only these `commit-round --state` values:
+
+- `intake`
+- `reviewing`
+- `responding`
+- `resubmitted`
+- `blocked`
