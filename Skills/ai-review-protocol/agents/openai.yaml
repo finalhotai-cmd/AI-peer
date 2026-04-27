@@ -1,0 +1,3 @@
+interface:
+  display_name: "AI Review Protocol"
+  short_description: "Run clean multi-round review exchanges"

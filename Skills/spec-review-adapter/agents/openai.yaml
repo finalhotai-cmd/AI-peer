@@ -1,0 +1,3 @@
+interface:
+  display_name: "Spec Review Adapter"
+  short_description: "Map review protocol onto Spec MCP rounds"
