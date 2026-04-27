@@ -1,155 +1,125 @@
 ---
 name: ai-review-protocol
-description: Review exchange protocol.
+description: Temporary AI peer-review exchange protocol.
+user-invocable: true
+allowed-tools: "Read Write Edit Bash Glob Grep"
+metadata:
+  version: "2.0.0"
 ---
 
 # AI Review Protocol
 
-Framework-agnostic review protocol. It does not know about Spec MCP or any other host workflow.
+Use this skill only for an active AI-to-AI review exchange. It has no automatic hooks.
 
-Read [core rules](./references/core.md) when you need the full field schema, rebuttal format, or decision heuristics.
+The exchange is temporary. It coordinates rounds in `.ai-peer-review/`; it does not decide when to stop, summarize, archive, or delete that directory.
 
-## What This Skill Decides
+For detailed finding and rebuttal rules, read [core rules](./references/core.md).
 
-- how to separate source documents from review dialogue
-- what a reviewer writes
-- what a drafter writes back
-- how blocking and non-blocking findings are expressed
-- how rebuttals and partial acceptance are recorded
-- how review state is persisted across rounds and session gaps
+Resolve `<skill-root>` as the directory containing this `SKILL.md`. All helper scripts are under `<skill-root>/scripts/`; do not resolve them from the project root or any parent directory.
 
-## What This Skill Does Not Decide
+## Files
 
-- where a project stores its source files
-- what tool or workflow owns review state
-- which file or record is the exchange layer for a specific framework
+Use only these project-local files:
 
-Use a framework-specific adapter for those mappings when needed.
+- `.ai-peer-review/review-state.md`
+- `.ai-peer-review/review-log.md`
+- `.ai-peer-review/rounds/round-N.md`
 
-## Roles
+Do not use chat history as the exchange layer. Do not create session/target subdirectories, date-based round files, or role-labeled round files.
 
-- `Reviewer`: inspects the current artifact, writes findings, and decides whether blocking issues remain.
-- `Drafter`: edits the source artifact and answers findings without polluting the source artifact with review history.
+## Mandatory Lifecycle
 
-If your role is clear, infer it from the task:
+Every active review turn MUST follow this order:
 
-- if asked to critique, inspect, or approve, act as `Reviewer`
-- if asked to revise, rewrite, or resubmit, act as `Drafter`
+1. Restore
+   - If `.ai-peer-review/review-state.md` exists, read it.
+   - If `handoff_pending: true` at the start of a user-invoked turn, run `review-flow.py begin-turn .`, then read state again.
+   - Then read its `current_round_file` and `.ai-peer-review/review-log.md`.
+   - If it does not exist, run `init-review.sh`.
 
-If your role is not clear and the user did not explicitly assign one, stop and ask the user before taking action. Do not guess.
+2. Act
+   - Use exactly one role: `Reviewer` or `Drafter`.
+   - Write the next `.ai-peer-review/rounds/round-N.md`.
 
-## Core Rules
+3. Commit
+   - After writing `round-N.md`, run `review-flow.py commit-round`.
+   - A round is incomplete until `commit-round` succeeds.
+   - A successful commit records a pending handoff but does not authorize same-response role switching.
 
-- Keep the source artifact publication-ready at every round.
-- Keep review dialogue out of the source artifact.
-- Treat the exchange layer as persistent working memory on disk, not as optional chat residue.
-- Put each finding in a separate structured comment object.
-- Make every finding actionable: problem, why it matters, what must change.
-- Allow disagreement, but keep rebuttals in the exchange layer, not in the source artifact.
-- Keep round summaries short and separate from detailed findings.
-- Do not flatter, appease, or defer to the other side just to keep the exchange smooth.
-- Do not invent objections just to appear rigorous or adversarial.
-- Every finding and every rebuttal must be technically or logically grounded and able to survive scrutiny.
-- If you are about to accept all opposing points, perform one independent self-check first. If no reasonable disagreement remains, full acceptance is allowed. Do not manufacture disagreement just to avoid a 100% acceptance rate.
-- If the review target, the feedback, and the requested action do not point to the same artifact or phase, stop and ask the user to clarify before continuing.
-- Review systematically by artifact type instead of relying on intuition alone.
-- After each material review action, persist the new state in the exchange layer before moving on.
-- When resuming after a gap, reconstruct state from the exchange layer before making new findings or edits.
+4. Check And Handoff
+   - Run `check-review.sh .`.
+   - Stop after reporting the round file and next actor.
+   - Your task for this role is complete.
+   - Do not act as `next_actor` in the same response.
 
-## Required Finding Shape
+## Initialize
 
-Use one object per finding with these fields:
+If `.ai-peer-review/review-state.md` does not exist, initialize:
 
-- `id`
-- `section`
-- `severity`
-- `comment`
-
-Recommended values:
-
-- `severity: major` for blocking issues
-- `severity: minor` for tightening, polish, or non-blocking clarity
-
-Example:
-
-```json
-{
-  "id": "comment_metric_baseline",
-  "section": "Success Metrics",
-  "severity": "major",
-  "comment": "The metric cannot be validated because the baseline workflow and measurement rule are undefined. Specify the baseline process, sampling window, and whether the statistic uses average or median."
-}
+```bash
+sh <skill-root>/scripts/init-review.sh <target-id> <source-artifact> <Reviewer|Drafter>
 ```
 
-## Reviewer Workflow
+If it exists, read it first, then read its `current_round_file` and `.ai-peer-review/review-log.md`.
 
-1. Read the latest source artifact and current exchange record.
-2. Check whether prior blocking findings were resolved.
-3. Write only delta findings for the current round.
-4. Mark clearly whether remaining issues are blocking or non-blocking.
-5. Do not rewrite the source artifact unless explicitly asked to switch roles.
-6. Persist round outcome before ending the turn.
+## Role Lock
 
-## Drafter Workflow
+- Current turn has exactly one role: `Reviewer` or `Drafter`.
+- If `current_role` exists in `review-state.md`, follow it.
+- `next_actor` is a future handoff target, not permission to continue as that role.
+- `handoff_pending: true` after your own commit means your task is complete. Stop.
+- Run `begin-turn` only at the start of a new user-invoked turn, never after your own commit in the same response.
+- If the user explicitly changes your role in natural language, do not edit `review-state.md` by hand. Run `user-override-role` first.
+- If role or target is unclear, stop and ask the user.
 
-1. Read all current findings before editing.
-2. Apply accepted changes directly in the source artifact.
-3. Record disagreement, partial acceptance, or alternative proposals in the exchange layer.
-4. Resubmit a clean source artifact with no review history embedded in it.
-5. Persist what changed, what remains open, and what was intentionally rejected.
+Begin-turn command:
 
-## Review State Machine
+```bash
+python3 <skill-root>/scripts/review-flow.py begin-turn .
+```
 
-Use this minimal state machine:
+Role override command:
 
-- `intake`: identify target artifact, role, and exchange layer
-- `reviewing`: reviewer inspects and records findings
-- `responding`: drafter applies changes and records responses
-- `resubmitted`: clean source artifact plus updated exchange layer are ready for the next review
-- `approved`: no blocking findings remain
-- `blocked`: role, topic, or workflow state is unclear; ask the user
+```bash
+python3 <skill-root>/scripts/review-flow.py user-override-role . \
+  --role Reviewer \
+  --reason "user explicitly reassigned this turn to Reviewer"
+```
 
-Allowed transitions:
+## Reviewer Round
 
-- `intake -> reviewing`
-- `intake -> responding`
-- `reviewing -> blocked`
-- `reviewing -> responding`
-- `reviewing -> approved`
-- `responding -> blocked`
-- `responding -> resubmitted`
-- `resubmitted -> reviewing`
+Inspect only as `Reviewer`; do not edit the source artifact. Commit with:
 
-Do not skip from ambiguous intake directly to editing or approval.
+```bash
+python3 <skill-root>/scripts/review-flow.py commit-round . \
+  --round-file .ai-peer-review/rounds/round-N.md \
+  --acting-role Reviewer \
+  --next-actor Drafter \
+  --state responding
+```
 
-## Rebuttal Rules
+Then run `check-review.sh .` and stop.
 
-- Rebuttals are allowed.
-- Rebuttals must answer a specific finding.
-- Rebuttals must state whether the finding is accepted, partial, or rejected.
-- Rebuttals must propose the replacement wording or boundary when rejecting a finding.
-- Rebuttals do not belong in the source artifact.
-- Rebuttals must address substance, not tone or authority.
+## Drafter Round
 
-## Round Summary Rules
+Edit the source artifact only as needed. Write responses and remaining issues to the round file. Commit with:
 
-- Keep summaries short.
-- Use summaries for what changed this round, not for extended argument.
-- Put detailed argument in the exchange layer.
+```bash
+python3 <skill-root>/scripts/review-flow.py commit-round . \
+  --round-file .ai-peer-review/rounds/round-N.md \
+  --acting-role Drafter \
+  --next-actor Reviewer \
+  --state resubmitted
+```
 
-## Fallback Rule
+Then run `check-review.sh .` and stop.
 
-If the host workflow does not define where review dialogue goes, create a dedicated review artifact and keep the source artifact clean.
+## Check
 
-Default fallback artifact:
+Run this when state may be stale or before handing off:
 
-- path: `ai-peer-review/<review-session-id>/<review-target-id>/round-<round-id>.md`
-- format: Markdown
-- purpose: round summary, structured findings, drafter rebuttals, and outcome state
+```bash
+sh <skill-root>/scripts/check-review.sh .
+```
 
-Default companion state files when the review is long-running or spans multiple sessions:
-
-- `ai-peer-review/<review-session-id>/<review-target-id>/review-state.md`
-- `ai-peer-review/<review-session-id>/<review-target-id>/review-log.md`
-
-Use them only when the host workflow does not already provide equivalent persistence.
+The check reports missing or inconsistent files but does not block or clean up.
